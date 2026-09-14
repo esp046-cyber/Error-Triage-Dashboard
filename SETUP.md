@@ -62,17 +62,26 @@ first **tag**. In each of your client-facing n8n workflows, add a tag with
 the client's name (e.g. "Acme Corp") so the dashboard can group and filter
 by client. Untagged workflows show up under "Unassigned."
 
-## 6. Point the frontend at your instance
+## 6. Configure the app — no code editing required
 
-In `index.html`, find this near the top of the `<script>` block:
+Deploy `index.html`, `manifest.json`, `sw.js`, and the icons to GitHub Pages
+exactly as they are — nothing in these files needs to change.
 
-```js
-const API_BASE = "https://your-n8n-instance.example.com/webhook"; // <-- EDIT ME
-```
+1. Open the deployed app. On first launch it shows a **"Welcome!"** screen
+   since no webhook URL is saved yet.
+2. Tap **Configure Now** (or the ⚙️ gear icon in the header any time after).
+3. Paste your n8n webhook base URL — everything up to and including
+   `/webhook`, e.g. `https://your-instance.app.n8n.cloud/webhook`.
+4. Tap **Test Connection**. It should turn green with "✅ Connected" within
+   a few seconds — that confirms both the URL and the `get-errors` workflow
+   are reachable before you commit to it.
+5. Tap **Save & Connect**. The URL is stored in this browser's
+   `localStorage`, the onboarding screen disappears, and polling starts
+   immediately.
 
-Replace it with your instance's webhook base URL (everything up to and
-including `/webhook`, no trailing slash), then re-upload `index.html` to
-your GitHub repo.
+This is per-browser: if you open the app in a different browser or clear
+site data, you'll see the onboarding screen again and need to re-paste the
+URL. Re-open Settings via the gear icon any time to check or change it.
 
 ## 7. CORS
 

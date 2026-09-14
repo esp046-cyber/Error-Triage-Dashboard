@@ -19,13 +19,14 @@
   7. Launch it from the home screen icon — it opens full-screen, no Safari
      chrome, and works offline thanks to sw.js caching the app shell.
 
-  LIVE VERSION — connects to real n8n webhooks instead of mock data.
-  Before deploying, set API_BASE near the top of the <script> block below to
-  your n8n instance's webhook base URL, e.g.:
-    const API_BASE = "https://your-n8n-instance.example.com/webhook";
-  This expects two workflows imported into that n8n instance:
-    - get-errors-workflow.json   -> exposes GET  {API_BASE}/get-errors
-    - retry-error-workflow.json  -> exposes POST {API_BASE}/retry-error
+  ZERO-CODE VERSION — no editing required before deploying. On first launch
+  the app shows a "Setup Required" screen; tap the gear icon (or the
+  Configure Now button) to paste your n8n webhook base URL, e.g.:
+    https://your-n8n-instance.example.com/webhook
+  It's saved to this browser's localStorage from then on — nothing to edit
+  in this file. This expects two workflows imported into that n8n instance:
+    - get-errors-workflow.json   -> exposes GET  {your-url}/get-errors
+    - retry-error-workflow.json  -> exposes POST {your-url}/retry-error
   See SETUP.md for how to generate the n8n API key those workflows need.
   ============================================================================
 -->
@@ -106,6 +107,29 @@
     letter-spacing: -0.01em;
   }
 
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .header-top h1 { margin: 0; }
+
+  .gear-btn {
+    flex: 0 0 auto;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    border-radius: 50%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+  }
+  .gear-btn:active { background: var(--panel-raised); }
+
   .subhead {
     margin: 0 0 12px;
     font-size: 13px;
@@ -168,6 +192,85 @@
     margin-bottom: 12px;
   }
   .conn-banner.show { display: flex; }
+
+  .onboarding {
+    text-align: center;
+    padding: 64px 8px 0;
+    color: var(--text-dim);
+  }
+  .onboarding-icon { font-size: 42px; margin-bottom: 16px; }
+  .onboarding h2 {
+    margin: 0 0 8px;
+    font-size: 19px;
+    color: var(--text);
+    font-weight: 700;
+  }
+  .onboarding p {
+    margin: 0 0 24px;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .text-input {
+    width: 100%;
+    min-height: var(--tap-min);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 12px;
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    margin-bottom: 8px;
+  }
+  .text-input:focus { outline: none; border-color: var(--action); }
+
+  .field-hint {
+    font-size: 12.5px;
+    color: var(--text-faint);
+    line-height: 1.5;
+    margin: 0 0 18px;
+  }
+  .field-hint code {
+    font-family: var(--font-mono);
+    background: var(--panel-raised);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .test-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .test-btn {
+    min-height: var(--tap-min);
+    padding: 0 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--panel-raised);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .test-btn:active { background: var(--border); }
+  .test-btn:disabled { opacity: 0.6; }
+
+  .test-result { font-size: 13.5px; font-weight: 700; }
+  .test-result.success { color: var(--status-resolved); }
+  .test-result.fail { color: var(--status-failed); }
+  .test-result.testing { color: var(--text-dim); }
 
   .error-card {
     width: 100%;
@@ -419,7 +522,10 @@
 <body>
 
 <header>
-  <h1>Where Did It Break?</h1>
+  <div class="header-top">
+    <h1>Where Did It Break?</h1>
+    <button class="gear-btn" id="gearBtn" aria-label="Settings">⚙️</button>
+  </div>
   <p class="subhead" id="subhead">Loading error feed…</p>
   <div class="chip-row" id="chipRow"></div>
 </header>
@@ -429,8 +535,51 @@
     <span>⚠️</span>
     <span id="connBannerText">Can't reach your n8n instance. Showing the last data received.</span>
   </div>
+
+  <div class="onboarding" id="onboarding" style="display:none;">
+    <div class="onboarding-icon">🔌</div>
+    <h2>Welcome!</h2>
+    <p>Let's connect your n8n instance to start seeing live errors here. No code editing needed — just paste a webhook URL.</p>
+    <button class="retry-btn" id="configureNowBtn">Configure Now</button>
+  </div>
+
   <div id="feed"></div>
 </main>
+
+<!-- Settings sheet -->
+<div class="scrim" id="settingsScrim"></div>
+<section class="sheet" id="settingsSheet" aria-hidden="true">
+  <div class="sheet-handle"></div>
+  <div class="sheet-scroll">
+    <div class="sheet-header">
+      <div class="workflow-name">Settings</div>
+      <div class="node-name">Connect your n8n instance</div>
+    </div>
+
+    <label class="field-label" for="webhookInput">n8n Webhook Base URL</label>
+    <input
+      type="url"
+      id="webhookInput"
+      class="text-input"
+      placeholder="https://your-n8n-instance.example.com/webhook"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+    />
+    <p class="field-hint">
+      Everything up to and including <code>/webhook</code> — n8n shows this
+      on the Webhook node once your workflows are active.
+    </p>
+
+    <div class="test-row">
+      <button class="test-btn" id="testConnBtn">Test Connection</button>
+      <span class="test-result" id="testResult"></span>
+    </div>
+  </div>
+  <div class="sheet-footer">
+    <button class="retry-btn" id="saveSettingsBtn">Save &amp; Connect</button>
+  </div>
+</section>
 
 <div class="scrim" id="scrim"></div>
 <section class="sheet" id="sheet" aria-hidden="true">
@@ -445,16 +594,30 @@
 
 <script>
 /* ==========================================================================
-   LIVE CONFIG
-   Point this at your n8n instance's webhook base URL (no trailing slash).
-   The two n8n workflow blueprints (get-errors-workflow.json and
-   retry-error-workflow.json) expose the two paths below once imported.
+   ZERO-CODE CONFIG
+   The n8n webhook base URL lives in this browser's localStorage instead of
+   being hardcoded — set once via the ⚙️ Settings sheet, no file editing.
    ========================================================================== */
 
-const API_BASE = "https://your-n8n-instance.example.com/webhook"; // <-- EDIT ME
-const GET_ERRORS_URL = `${API_BASE}/get-errors`;
-const RETRY_ERROR_URL = `${API_BASE}/retry-error`;
+const STORAGE_KEY = "wdib_webhook_base";
 const POLL_INTERVAL_MS = 10000;
+let pollTimer = null;
+
+function getWebhookBase() {
+  return (localStorage.getItem(STORAGE_KEY) || "").trim().replace(/\/$/, "");
+}
+function setWebhookBase(url) {
+  localStorage.setItem(STORAGE_KEY, url.trim().replace(/\/$/, ""));
+}
+function isConfigured() {
+  return getWebhookBase().length > 0;
+}
+function getErrorsUrl() {
+  return `${getWebhookBase()}/get-errors`;
+}
+function retryErrorUrl() {
+  return `${getWebhookBase()}/retry-error`;
+}
 
 /* ==========================================================================
    STATE + RENDER
@@ -629,7 +792,7 @@ retryBtn.addEventListener("click", async () => {
   renderFeed();
 
   try {
-    const res = await fetch(RETRY_ERROR_URL, {
+    const res = await fetch(retryErrorUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ executionId: e.executionId })
@@ -672,8 +835,9 @@ function setConnBanner(show, message) {
 }
 
 async function fetchErrors() {
+  if (!isConfigured()) return;
   try {
-    const res = await fetch(GET_ERRORS_URL, { headers: { "Accept": "application/json" } });
+    const res = await fetch(getErrorsUrl(), { headers: { "Accept": "application/json" } });
     if (!res.ok) throw new Error(`Backend returned ${res.status}`);
     const data = await res.json();
 
@@ -716,8 +880,115 @@ async function fetchErrors() {
   }
 }
 
-fetchErrors();
-setInterval(fetchErrors, POLL_INTERVAL_MS);
+/* ==========================================================================
+   ONBOARDING + SETTINGS SHEET
+   ========================================================================== */
+
+const onboardingEl = document.getElementById("onboarding");
+const gearBtn = document.getElementById("gearBtn");
+const configureNowBtn = document.getElementById("configureNowBtn");
+const settingsSheetEl = document.getElementById("settingsSheet");
+const settingsScrimEl = document.getElementById("settingsScrim");
+const webhookInput = document.getElementById("webhookInput");
+const testConnBtn = document.getElementById("testConnBtn");
+const testResultEl = document.getElementById("testResult");
+const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+
+function showOnboarding(show) {
+  onboardingEl.style.display = show ? "block" : "none";
+  feedEl.style.display = show ? "none" : "block";
+  if (show) setConnBanner(false);
+}
+
+function openSettings() {
+  webhookInput.value = getWebhookBase();
+  testResultEl.textContent = "";
+  testResultEl.className = "test-result";
+  settingsSheetEl.classList.add("open");
+  settingsScrimEl.classList.add("open");
+  settingsSheetEl.setAttribute("aria-hidden", "false");
+}
+
+function closeSettings() {
+  settingsSheetEl.classList.remove("open");
+  settingsScrimEl.classList.remove("open");
+  settingsSheetEl.setAttribute("aria-hidden", "true");
+}
+
+gearBtn.addEventListener("click", openSettings);
+configureNowBtn.addEventListener("click", openSettings);
+settingsScrimEl.addEventListener("click", closeSettings);
+
+testConnBtn.addEventListener("click", async () => {
+  const url = webhookInput.value.trim().replace(/\/$/, "");
+  if (!url) {
+    testResultEl.textContent = "Paste a URL first";
+    testResultEl.className = "test-result fail";
+    return;
+  }
+
+  testConnBtn.disabled = true;
+  testResultEl.textContent = "Testing…";
+  testResultEl.className = "test-result testing";
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const res = await fetch(`${url}/get-errors`, {
+      headers: { "Accept": "application/json" },
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await res.json(); // confirm it actually returns JSON, not just any 200
+    testResultEl.textContent = "✅ Connected";
+    testResultEl.className = "test-result success";
+  } catch (err) {
+    console.error("Connection test failed:", err);
+    testResultEl.textContent = "❌ Connection failed";
+    testResultEl.className = "test-result fail";
+  } finally {
+    clearTimeout(timeoutId);
+    testConnBtn.disabled = false;
+  }
+});
+
+saveSettingsBtn.addEventListener("click", () => {
+  const url = webhookInput.value.trim().replace(/\/$/, "");
+  if (!url) {
+    testResultEl.textContent = "Paste a URL first";
+    testResultEl.className = "test-result fail";
+    return;
+  }
+  setWebhookBase(url);
+  closeSettings();
+  showOnboarding(false);
+  subheadEl.textContent = "Loading error feed…";
+  startPolling();
+});
+
+/* ==========================================================================
+   INIT
+   ========================================================================== */
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  fetchErrors();
+  pollTimer = setInterval(fetchErrors, POLL_INTERVAL_MS);
+}
+
+function init() {
+  renderChips();
+  if (!isConfigured()) {
+    subheadEl.textContent = "Setup required";
+    showOnboarding(true);
+    return;
+  }
+  showOnboarding(false);
+  startPolling();
+}
+
+init();
 
 /* ==========================================================================
    SERVICE WORKER REGISTRATION
