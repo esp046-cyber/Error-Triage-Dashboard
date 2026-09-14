@@ -1,0 +1,247 @@
+{
+  "name": "Error Triage - Get Errors API",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "get-errors",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-get-errors",
+      "name": "Webhook - Get Errors",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "get-errors-webhook"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.N8N_BASE_URL}}/api/v1/executions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "status", "value": "error" },
+            { "name": "limit", "value": "20" },
+            { "name": "includeData", "value": "true" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-fetch-executions",
+      "name": "Fetch Failed Executions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "credentials": {
+        "n8nApi": {
+          "id": "REPLACE_WITH_YOUR_N8N_API_CREDENTIAL_ID",
+          "name": "n8n account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "split-out-executions",
+      "name": "Split Out Executions",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "executionId",
+              "type": "string",
+              "value": "={{$json.id}}"
+            },
+            {
+              "name": "workflowName",
+              "type": "string",
+              "value": "={{$json.workflowData.name}}"
+            },
+            {
+              "name": "client",
+              "type": "string",
+              "value": "={{$json.workflowData.tags && $json.workflowData.tags.length ? $json.workflowData.tags[0].name : 'Unassigned'}}"
+            },
+            {
+              "name": "status",
+              "type": "string",
+              "value": "failed"
+            },
+            {
+              "name": "rawError",
+              "type": "string",
+              "value": "={{JSON.stringify($json.data && $json.data.resultData && $json.data.resultData.error ? $json.data.resultData.error : {message: 'No error detail returned by /executions for this run.'})}}"
+            },
+            {
+              "name": "startedAt",
+              "type": "string",
+              "value": "={{$json.startedAt}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "shape-execution-fields",
+      "name": "Shape Execution Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{$credentials.anthropicApi.apiKey}}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"claude-sonnet-5\", max_tokens: 150, messages: [ { role: \"user\", content: \"Translate this workflow error into ONE short, plain-English sentence a non-engineer could understand. Name the likely service and cause if identifiable (e.g. 'HubSpot rate limit exceeded'). Do not repeat the raw error text. Error: \" + $json.rawError } ] }) }}",
+        "options": {}
+      },
+      "id": "http-translate-error",
+      "name": "Translate Error (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "executionId",
+              "type": "string",
+              "value": "={{$('Shape Execution Fields').item.json.executionId}}"
+            },
+            {
+              "name": "client",
+              "type": "string",
+              "value": "={{$('Shape Execution Fields').item.json.client}}"
+            },
+            {
+              "name": "workflow",
+              "type": "string",
+              "value": "={{$('Shape Execution Fields').item.json.workflowName}}"
+            },
+            {
+              "name": "node",
+              "type": "string",
+              "value": "={{ (() => { try { return JSON.parse($('Shape Execution Fields').item.json.rawError).node?.name || 'Unknown node'; } catch(e) { return 'Unknown node'; } })() }}"
+            },
+            {
+              "name": "status",
+              "type": "string",
+              "value": "failed"
+            },
+            {
+              "name": "raw",
+              "type": "string",
+              "value": "={{$('Shape Execution Fields').item.json.rawError}}"
+            },
+            {
+              "name": "translation",
+              "type": "string",
+              "value": "={{$json.content[0].text}}"
+            },
+            {
+              "name": "startedAt",
+              "type": "string",
+              "value": "={{$('Shape Execution Fields').item.json.startedAt}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "shape-final-error",
+      "name": "Shape Final Error Object",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1420, 300]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "errors",
+        "options": {}
+      },
+      "id": "aggregate-errors",
+      "name": "Aggregate Into Array",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1660, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { errors: $json.errors, fetchedAt: $now.toISO() } }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      },
+      "id": "respond-get-errors",
+      "name": "Respond With Errors",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1900, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - Get Errors": {
+      "main": [[{ "node": "Fetch Failed Executions", "type": "main", "index": 0 }]]
+    },
+    "Fetch Failed Executions": {
+      "main": [[{ "node": "Split Out Executions", "type": "main", "index": 0 }]]
+    },
+    "Split Out Executions": {
+      "main": [[{ "node": "Shape Execution Fields", "type": "main", "index": 0 }]]
+    },
+    "Shape Execution Fields": {
+      "main": [[{ "node": "Translate Error (Claude)", "type": "main", "index": 0 }]]
+    },
+    "Translate Error (Claude)": {
+      "main": [[{ "node": "Shape Final Error Object", "type": "main", "index": 0 }]]
+    },
+    "Shape Final Error Object": {
+      "main": [[{ "node": "Aggregate Into Array", "type": "main", "index": 0 }]]
+    },
+    "Aggregate Into Array": {
+      "main": [[{ "node": "Respond With Errors", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "instanceId": "replace-with-your-n8n-instance-id" },
+  "id": "error-triage-get-errors",
+  "tags": []
+}

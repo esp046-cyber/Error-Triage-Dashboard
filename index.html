@@ -19,10 +19,14 @@
   7. Launch it from the home screen icon — it opens full-screen, no Safari
      chrome, and works offline thanks to sw.js caching the app shell.
 
-  This build uses MOCK data and MOCK API calls (clearly marked below) so you
-  can see the full UI and interaction flow with no backend required. Search
-  for "MOCK:" comments to find every spot to wire up to a real backend later
-  (real n8n webhooks, a real LLM call, a real retry request).
+  LIVE VERSION — connects to real n8n webhooks instead of mock data.
+  Before deploying, set API_BASE near the top of the <script> block below to
+  your n8n instance's webhook base URL, e.g.:
+    const API_BASE = "https://your-n8n-instance.example.com/webhook";
+  This expects two workflows imported into that n8n instance:
+    - get-errors-workflow.json   -> exposes GET  {API_BASE}/get-errors
+    - retry-error-workflow.json  -> exposes POST {API_BASE}/retry-error
+  See SETUP.md for how to generate the n8n API key those workflows need.
   ============================================================================
 -->
 <html lang="en">
@@ -150,6 +154,20 @@
   }
   .empty-state .glyph { font-size: 34px; margin-bottom: 10px; }
   .empty-state p { margin: 0; font-size: 14.5px; }
+
+  .conn-banner {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    background: rgba(240, 86, 61, 0.12);
+    border: 1px solid var(--status-failed);
+    color: #FF8F7A;
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .conn-banner.show { display: flex; }
 
   .error-card {
     width: 100%;
@@ -406,7 +424,13 @@
   <div class="chip-row" id="chipRow"></div>
 </header>
 
-<main id="feed"></main>
+<main>
+  <div class="conn-banner" id="connBanner">
+    <span>⚠️</span>
+    <span id="connBannerText">Can't reach your n8n instance. Showing the last data received.</span>
+  </div>
+  <div id="feed"></div>
+</main>
 
 <div class="scrim" id="scrim"></div>
 <section class="sheet" id="sheet" aria-hidden="true">
@@ -421,115 +445,50 @@
 
 <script>
 /* ==========================================================================
-   MOCK DATA
-   Replace generateMockErrors() with a real fetch() to your backend once you
-   have one collecting n8n error-trigger webhooks.
+   LIVE CONFIG
+   Point this at your n8n instance's webhook base URL (no trailing slash).
+   The two n8n workflow blueprints (get-errors-workflow.json and
+   retry-error-workflow.json) expose the two paths below once imported.
    ========================================================================== */
 
-const CLIENTS = ["Acme Corp", "Nimbus Labs", "Kite Analytics", "Fernwood Co"];
-
-const RAW_ERRORS = [
-  {
-    client: "Acme Corp",
-    workflow: "CRM Contact Sync",
-    node: "HubSpot – Create Contact",
-    status: "failed",
-    minutesAgo: 4,
-    raw: `Error: Request failed with status code 429\n  at createError (axios/lib/core/createError.js:16:15)\n  at settle (axios/lib/core/settle.js:17:12)\n  at IncomingMessage.handleStreamEnd (axios/lib/adapters/http.js:322:11)\nHubSpotApiError: rate_limit_exceeded — 100/10s burst limit reached`
-  },
-  {
-    client: "Nimbus Labs",
-    workflow: "Invoice Reconciliation",
-    node: "Postgres – Insert Row",
-    status: "failed",
-    minutesAgo: 12,
-    raw: `error: duplicate key value violates unique constraint "invoices_pkey"\n  detail: Key (invoice_id)=(INV-88213) already exists.\n  at Query.run (pg/lib/query.js:128:8)`
-  },
-  {
-    client: "Kite Analytics",
-    workflow: "Slack Digest",
-    node: "Slack – Post Message",
-    status: "retrying",
-    minutesAgo: 2,
-    raw: `SlackAPIError: channel_not_found\n  at checkStatusCode (@slack/web-api/dist/WebClient.js:210:9)\n  response.status = 200, ok:false, error:"channel_not_found"`
-  },
-  {
-    client: "Acme Corp",
-    workflow: "Lead Scoring",
-    node: "OpenAI – Score Lead",
-    status: "failed",
-    minutesAgo: 27,
-    raw: `Error: 401 Incorrect API key provided: sk-••••1a2b\n  at APIError.generate (openai/error.js:41:20)\n  at OpenAI.request (openai/core.js:256:24)`
-  },
-  {
-    client: "Fernwood Co",
-    workflow: "Order Fulfillment",
-    node: "Shopify – Update Order",
-    status: "resolved",
-    minutesAgo: 51,
-    raw: `Error: ETIMEDOUT\n  at ClientRequest.<anonymous> (shopify-api-node/lib/base-service.js:44:12)\n  connect ETIMEDOUT 23.227.38.65:443`
-  },
-  {
-    client: "Nimbus Labs",
-    workflow: "Weekly Report Email",
-    node: "Gmail – Send Email",
-    status: "failed",
-    minutesAgo: 63,
-    raw: `Error: invalid_grant\n  at Gmail.refreshAccessToken (googleapis/lib/auth/oauth2client.js:220:11)\n  Token has been expired or revoked.`
-  }
-];
-
-/* MOCK: plain-English translations a real LLM call would produce.
-   Matched loosely by keyword so the demo feels alive; swap this whole
-   function for a fetch() to your backend's /translate endpoint. */
-function mockTranslate(raw) {
-  const text = raw.toLowerCase();
-  if (text.includes("429") || text.includes("rate_limit")) {
-    return "HubSpot rate limit exceeded. The workflow sent requests too quickly — space out the batch or add a delay node before retrying.";
-  }
-  if (text.includes("duplicate key")) {
-    return "This invoice was already inserted once before. The row already exists in Postgres, so re-running as-is will fail again until the duplicate is handled.";
-  }
-  if (text.includes("channel_not_found")) {
-    return "Slack can't find the target channel. It was likely renamed or archived — update the channel ID in this node before retrying.";
-  }
-  if (text.includes("401") || text.includes("incorrect api key")) {
-    return "OpenAI rejected the request — the API key on this node is invalid or has been rotated. Update the credential, then retry.";
-  }
-  if (text.includes("etimedout")) {
-    return "Shopify didn't respond in time. This looks like a transient network hiccup, not a config problem — safe to retry as-is.";
-  }
-  if (text.includes("invalid_grant")) {
-    return "The Gmail connection's login has expired. Reconnect the Google account on this node before retrying.";
-  }
-  return "This error doesn't match a known pattern yet — check the raw stack trace below.";
-}
-
-const errors = RAW_ERRORS.map((e, i) => ({
-  id: "err_" + i,
-  ...e,
-  translation: null
-}));
+const API_BASE = "https://your-n8n-instance.example.com/webhook"; // <-- EDIT ME
+const GET_ERRORS_URL = `${API_BASE}/get-errors`;
+const RETRY_ERROR_URL = `${API_BASE}/retry-error`;
+const POLL_INTERVAL_MS = 10000;
 
 /* ==========================================================================
    STATE + RENDER
+   `errors` is populated entirely from the live backend — no seeded/mock
+   entries here. `client` values come from whatever workflow tags your n8n
+   instance returns, so the filter chip row is built dynamically too.
    ========================================================================== */
 
+let errors = [];
 let activeFilter = "All";
 let openErrorId = null;
+let isFirstLoad = true;
 
 const feedEl = document.getElementById("feed");
 const chipRowEl = document.getElementById("chipRow");
 const subheadEl = document.getElementById("subhead");
 
-function timeAgo(mins) {
+function minutesSince(isoString) {
+  if (!isoString) return 0;
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  return Math.max(0, Math.round(diffMs / 60000));
+}
+
+function timeAgo(isoString) {
+  const mins = minutesSince(isoString);
+  if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
   const h = Math.floor(mins / 60);
   return `${h}h ago`;
 }
 
 function renderChips() {
-  const filters = ["All", ...CLIENTS];
+  const clients = [...new Set(errors.map(e => e.client))].sort();
+  const filters = ["All", ...clients];
   chipRowEl.innerHTML = filters.map(f =>
     `<button class="chip ${f === activeFilter ? "active" : ""}" data-filter="${f}">${f}</button>`
   ).join("");
@@ -571,7 +530,7 @@ function renderFeed() {
       <div class="workflow-name">${e.workflow}</div>
       <div class="node-name">${e.node}</div>
       <div class="card-bottom-row">
-        <span class="timestamp">${timeAgo(e.minutesAgo)}</span>
+        <span class="timestamp">${timeAgo(e.startedAt)}</span>
         <span class="chevron">›</span>
       </div>
     </button>
@@ -599,15 +558,6 @@ function openSheet(id) {
   sheetEl.classList.add("open");
   scrimEl.classList.add("open");
   sheetEl.setAttribute("aria-hidden", "false");
-
-  // MOCK: simulate an LLM translation call if we don't have one cached yet.
-  if (!e.translation) {
-    setTimeout(() => {
-      e.translation = mockTranslate(e.raw);
-      if (openErrorId === id) renderSheetContent(e);
-    }, 650);
-  }
-
   resetRetryButton(e);
 }
 
@@ -650,7 +600,7 @@ function renderSheetContent(e) {
     <div class="meta-list">
       <div><span>Client</span><span>${e.client}</span></div>
       <div><span>Node</span><span>${e.node}</span></div>
-      <div><span>Last run</span><span>${timeAgo(e.minutesAgo)}</span></div>
+      <div><span>Last run</span><span>${timeAgo(e.startedAt)}</span></div>
     </div>
   `;
 
@@ -666,11 +616,10 @@ function resetRetryButton(e) {
     e.status === "resolved" ? "Retry again" : "Retry workflow &nbsp;↻";
 }
 
-/* MOCK: simulates POSTing to n8n's webhook/API to re-trigger the workflow.
-   Swap the setTimeout below for something like:
-     await fetch(`${clientBaseUrl}/webhook/retry/${workflowId}`, { method: "POST", headers: {...} })
-*/
-retryBtn.addEventListener("click", () => {
+/* Posts to the n8n retry-error webhook to actually re-trigger the failed
+   execution. Optimistically flips the row to "retrying" so the UI feels
+   instant, then reconciles with whatever the next poll returns. */
+retryBtn.addEventListener("click", async () => {
   if (!openErrorId) return;
   const e = errors.find(x => x.id === openErrorId);
 
@@ -679,36 +628,96 @@ retryBtn.addEventListener("click", () => {
   e.status = "retrying";
   renderFeed();
 
-  setTimeout(() => {
-    // MOCK: 80% of retries succeed, just to show both outcomes.
-    const succeeded = Math.random() < 0.8;
-    e.status = succeeded ? "resolved" : "failed";
-    e.minutesAgo = 0;
+  try {
+    const res = await fetch(RETRY_ERROR_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ executionId: e.executionId })
+    });
+    const data = await res.json();
 
-    retryBtn.disabled = false;
-    if (succeeded) {
-      retryBtn.classList.add("resolved");
-      retryLabel.textContent = "Resolved ✓";
-    } else {
-      retryBtn.classList.add("failed-again");
-      retryLabel.textContent = "Still failing — retry again";
+    if (!res.ok || data.success === false) {
+      throw new Error(data.error || `Retry request failed (${res.status})`);
     }
+
+    retryBtn.classList.add("resolved");
+    retryLabel.textContent = "Retry sent ✓";
+    setConnBanner(false);
+
+    // Give n8n a moment to actually run the workflow, then re-poll for the
+    // real outcome instead of guessing at it client-side.
+    setTimeout(fetchErrors, 3000);
+  } catch (err) {
+    console.error("Retry failed:", err);
+    e.status = "failed";
+    retryBtn.classList.add("failed-again");
+    retryLabel.textContent = "Retry failed — tap to try again";
+    retryBtn.disabled = false;
     renderFeed();
-  }, 1400);
+  }
 });
 
 scrimEl.addEventListener("click", closeSheet);
 
 /* ==========================================================================
-   INIT
-   MOCK: simulates the initial webhook-feed fetch with a short delay so the
-   loading state in the subhead is visible, the way a real network call
-   would behave.
+   LIVE FETCH + POLLING
    ========================================================================== */
-setTimeout(() => {
-  renderChips();
-  renderFeed();
-}, 400);
+
+const connBannerEl = document.getElementById("connBanner");
+const connBannerTextEl = document.getElementById("connBannerText");
+
+function setConnBanner(show, message) {
+  connBannerEl.classList.toggle("show", show);
+  if (message) connBannerTextEl.textContent = message;
+}
+
+async function fetchErrors() {
+  try {
+    const res = await fetch(GET_ERRORS_URL, { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+    const data = await res.json();
+
+    errors = (data.errors || []).map(e => ({ ...e, id: e.executionId }));
+    setConnBanner(false);
+    renderChips();
+    renderFeed();
+
+    // Keep the open detail sheet in sync with the latest poll, in case a
+    // retry resolved (or re-failed) while the user was looking at it.
+    if (openErrorId) {
+      const updated = errors.find(x => x.id === openErrorId);
+      if (updated) {
+        renderSheetContent(updated);
+        resetRetryButton(updated);
+      } else {
+        // The execution no longer appears in the failed-executions list,
+        // which means the retry succeeded — n8n's /executions?status=error
+        // filter simply won't return it anymore.
+        retryBtn.classList.remove("failed-again");
+        retryBtn.classList.add("resolved");
+        retryBtn.disabled = true;
+        retryLabel.textContent = "Resolved ✓";
+      }
+    }
+  } catch (err) {
+    console.error("Failed to fetch errors:", err);
+    setConnBanner(
+      true,
+      "Can't reach your n8n instance right now. Showing the last data received."
+    );
+    // Still render whatever we already have, subhead included.
+    if (isFirstLoad) {
+      subheadEl.textContent = "Couldn't load the error feed";
+      renderChips();
+      renderFeed();
+    }
+  } finally {
+    isFirstLoad = false;
+  }
+}
+
+fetchErrors();
+setInterval(fetchErrors, POLL_INTERVAL_MS);
 
 /* ==========================================================================
    SERVICE WORKER REGISTRATION
