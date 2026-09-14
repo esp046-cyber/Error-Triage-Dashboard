@@ -61,8 +61,8 @@
     --action: #4C8DFF;
     --action-press: #3A73E0;
 
-    --radius: 14px;
-    --radius-sm: 9px;
+    --radius: 16px;
+    --radius-sm: 10px;
     --tap-min: 44px;
 
     --safe-top: env(safe-area-inset-top, 0px);
@@ -95,7 +95,9 @@
     position: sticky;
     top: 0;
     z-index: 5;
-    background: var(--bg);
+    background: rgba(16, 19, 26, 0.72);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
     padding: calc(var(--safe-top) + 14px) 18px 10px;
     border-bottom: 1px solid var(--border);
   }
@@ -278,6 +280,7 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.28);
     padding: 14px 14px 12px;
     margin-bottom: 10px;
     color: var(--text);
@@ -375,6 +378,7 @@
     max-height: 88dvh;
     display: flex;
     flex-direction: column;
+    box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
     transform: translateY(100%);
     transition: transform 0.28s cubic-bezier(.32,.72,0,1);
   }
@@ -481,7 +485,9 @@
   .sheet-footer {
     padding: 12px 18px calc(14px + var(--safe-bottom));
     border-top: 1px solid var(--border);
-    background: var(--panel);
+    background: rgba(23, 27, 36, 0.85);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
   }
 
   .retry-btn {
