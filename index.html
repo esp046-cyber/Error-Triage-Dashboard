@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  "Where Did It Break?" — Error Triage Dashboard
+  Static, zero-build PWA. Deploy as-is to GitHub Pages.
+
+  HOW TO PUBLISH THIS ON GITHUB PAGES (iPhone 8 Plus install walkthrough):
+  1. Create a new GitHub repository (public repos get free Pages hosting).
+  2. Upload these 4 files to the repo root: index.html, manifest.json, sw.js,
+     icon-192.png, icon-512.png (5 files total — keep them all in the root,
+     next to each other, so the relative paths below resolve correctly).
+  3. In the repo, go to Settings → Pages → Build and deployment → Source,
+     choose "Deploy from a branch", branch = main, folder = / (root). Save.
+  4. GitHub gives you a URL like https://<your-username>.github.io/<repo>/ —
+     wait a minute or two for the first deploy, then open that URL.
+  5. On the iPhone 8 Plus: open that URL in Safari (must be Safari, not
+     Chrome — iOS only allows "Add to Home Screen" installs from Safari).
+  6. Tap the Share icon (square with an arrow) → "Add to Home Screen" → Add.
+  7. Launch it from the home screen icon — it opens full-screen, no Safari
+     chrome, and works offline thanks to sw.js caching the app shell.
+
+  This build uses MOCK data and MOCK API calls (clearly marked below) so you
+  can see the full UI and interaction flow with no backend required. Search
+  for "MOCK:" comments to find every spot to wire up to a real backend later
+  (real n8n webhooks, a real LLM call, a real retry request).
+  ============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=414, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Where Did It Break?</title>
+
+<!-- PWA / iOS install metadata -->
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#10131A" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Broke?" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<link rel="icon" href="./icon-192.png" />
+
+<style>
+  :root {
+    --bg: #10131A;
+    --panel: #171B24;
+    --panel-raised: #1D2230;
+    --border: #262B36;
+    --text: #E8EAED;
+    --text-dim: #8B92A0;
+    --text-faint: #565D6D;
+
+    --status-failed: #F0563D;
+    --status-retrying: #E8A93B;
+    --status-resolved: #3DDC84;
+    --action: #4C8DFF;
+    --action-press: #3A73E0;
+
+    --radius: 14px;
+    --radius-sm: 9px;
+    --tap-min: 44px;
+
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    height: 100%;
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    padding: calc(var(--safe-top) + 14px) 18px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h1 {
+    margin: 0 0 2px;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .subhead {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .chip-row {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .chip-row::-webkit-scrollbar { display: none; }
+
+  .chip {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    min-height: var(--tap-min);
+    display: flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text-dim);
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+
+  .chip.active {
+    background: var(--action);
+    border-color: var(--action);
+    color: #fff;
+  }
+
+  /* ---------- Feed ---------- */
+  main {
+    flex: 1;
+    padding: 14px 18px calc(24px + var(--safe-bottom));
+  }
+
+  .empty-state {
+    margin-top: 60px;
+    text-align: center;
+    color: var(--text-dim);
+  }
+  .empty-state .glyph { font-size: 34px; margin-bottom: 10px; }
+  .empty-state p { margin: 0; font-size: 14.5px; }
+
+  .error-card {
+    width: 100%;
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 14px 12px;
+    margin-bottom: 10px;
+    color: var(--text);
+    font-family: var(--font-ui);
+    display: block;
+    min-height: var(--tap-min);
+  }
+  .error-card:active { background: var(--panel-raised); }
+
+  .card-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .client-tag {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .status-dot.failed { background: var(--status-failed); }
+  .status-dot.retrying { background: var(--status-retrying); animation: pulse 1.1s infinite; }
+  .status-dot.resolved { background: var(--status-resolved); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  .status-label {
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: capitalize;
+  }
+  .status-label.failed { color: var(--status-failed); }
+  .status-label.retrying { color: var(--status-retrying); }
+  .status-label.resolved { color: var(--status-resolved); }
+
+  .workflow-name {
+    font-size: 15.5px;
+    font-weight: 700;
+    margin-bottom: 3px;
+  }
+
+  .node-name {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .card-bottom-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .timestamp { font-size: 12px; color: var(--text-faint); }
+
+  .chevron { color: var(--text-faint); font-size: 15px; }
+
+  /* ---------- Slide-over detail sheet ---------- */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+    z-index: 10;
+  }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+
+  .sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 11;
+    background: var(--panel);
+    border-top-left-radius: 20px;
+    border-top-right-radius: 20px;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    max-height: 88dvh;
+    display: flex;
+    flex-direction: column;
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(.32,.72,0,1);
+  }
+  .sheet.open { transform: translateY(0); }
+
+  .sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    margin: 10px auto 6px;
+  }
+
+  .sheet-scroll {
+    overflow-y: auto;
+    padding: 4px 18px 18px;
+  }
+
+  .sheet-header {
+    margin-bottom: 14px;
+  }
+  .sheet-header .workflow-name { font-size: 18px; }
+  .sheet-header .node-name { margin-bottom: 0; }
+
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 14px 0;
+  }
+
+  .translation-card {
+    background: var(--panel-raised);
+    border: 1px solid var(--action);
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+  .translation-label {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--action);
+    margin-bottom: 6px;
+  }
+  .translation-text {
+    font-size: 15.5px;
+    line-height: 1.45;
+    font-weight: 600;
+  }
+  .translation-loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .accordion {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .accordion-toggle {
+    width: 100%;
+    min-height: var(--tap-min);
+    background: var(--panel-raised);
+    border: none;
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+  }
+  .accordion-toggle .chevron { transition: transform 0.2s ease; }
+  .accordion.open .accordion-toggle .chevron { transform: rotate(90deg); }
+
+  .accordion-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease;
+  }
+  .accordion.open .accordion-body { max-height: 320px; }
+
+  .stack-trace {
+    margin: 0;
+    padding: 12px 14px 14px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #FF8F7A;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .meta-list {
+    font-size: 13.5px;
+    color: var(--text-dim);
+  }
+  .meta-list div { display: flex; justify-content: space-between; padding: 6px 0; }
+  .meta-list div + div { border-top: 1px solid var(--border); }
+  .meta-list span:last-child { color: var(--text); font-weight: 600; }
+
+  .sheet-footer {
+    padding: 12px 18px calc(14px + var(--safe-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .retry-btn {
+    width: 100%;
+    min-height: 50px;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: var(--action);
+    color: #fff;
+    font-family: var(--font-ui);
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .retry-btn:active { background: var(--action-press); }
+  .retry-btn:disabled { opacity: 0.65; }
+  .retry-btn.resolved { background: var(--status-resolved); }
+  .retry-btn.failed-again { background: var(--status-failed); }
+
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: #fff;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sheet, .scrim, .accordion-body, .status-dot.retrying, .spinner { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Where Did It Break?</h1>
+  <p class="subhead" id="subhead">Loading error feed…</p>
+  <div class="chip-row" id="chipRow"></div>
+</header>
+
+<main id="feed"></main>
+
+<div class="scrim" id="scrim"></div>
+<section class="sheet" id="sheet" aria-hidden="true">
+  <div class="sheet-handle"></div>
+  <div class="sheet-scroll" id="sheetScroll"></div>
+  <div class="sheet-footer">
+    <button class="retry-btn" id="retryBtn">
+      <span id="retryLabel">Retry workflow</span>
+    </button>
+  </div>
+</section>
+
+<script>
+/* ==========================================================================
+   MOCK DATA
+   Replace generateMockErrors() with a real fetch() to your backend once you
+   have one collecting n8n error-trigger webhooks.
+   ========================================================================== */
+
+const CLIENTS = ["Acme Corp", "Nimbus Labs", "Kite Analytics", "Fernwood Co"];
+
+const RAW_ERRORS = [
+  {
+    client: "Acme Corp",
+    workflow: "CRM Contact Sync",
+    node: "HubSpot – Create Contact",
+    status: "failed",
+    minutesAgo: 4,
+    raw: `Error: Request failed with status code 429\n  at createError (axios/lib/core/createError.js:16:15)\n  at settle (axios/lib/core/settle.js:17:12)\n  at IncomingMessage.handleStreamEnd (axios/lib/adapters/http.js:322:11)\nHubSpotApiError: rate_limit_exceeded — 100/10s burst limit reached`
+  },
+  {
+    client: "Nimbus Labs",
+    workflow: "Invoice Reconciliation",
+    node: "Postgres – Insert Row",
+    status: "failed",
+    minutesAgo: 12,
+    raw: `error: duplicate key value violates unique constraint "invoices_pkey"\n  detail: Key (invoice_id)=(INV-88213) already exists.\n  at Query.run (pg/lib/query.js:128:8)`
+  },
+  {
+    client: "Kite Analytics",
+    workflow: "Slack Digest",
+    node: "Slack – Post Message",
+    status: "retrying",
+    minutesAgo: 2,
+    raw: `SlackAPIError: channel_not_found\n  at checkStatusCode (@slack/web-api/dist/WebClient.js:210:9)\n  response.status = 200, ok:false, error:"channel_not_found"`
+  },
+  {
+    client: "Acme Corp",
+    workflow: "Lead Scoring",
+    node: "OpenAI – Score Lead",
+    status: "failed",
+    minutesAgo: 27,
+    raw: `Error: 401 Incorrect API key provided: sk-••••1a2b\n  at APIError.generate (openai/error.js:41:20)\n  at OpenAI.request (openai/core.js:256:24)`
+  },
+  {
+    client: "Fernwood Co",
+    workflow: "Order Fulfillment",
+    node: "Shopify – Update Order",
+    status: "resolved",
+    minutesAgo: 51,
+    raw: `Error: ETIMEDOUT\n  at ClientRequest.<anonymous> (shopify-api-node/lib/base-service.js:44:12)\n  connect ETIMEDOUT 23.227.38.65:443`
+  },
+  {
+    client: "Nimbus Labs",
+    workflow: "Weekly Report Email",
+    node: "Gmail – Send Email",
+    status: "failed",
+    minutesAgo: 63,
+    raw: `Error: invalid_grant\n  at Gmail.refreshAccessToken (googleapis/lib/auth/oauth2client.js:220:11)\n  Token has been expired or revoked.`
+  }
+];
+
+/* MOCK: plain-English translations a real LLM call would produce.
+   Matched loosely by keyword so the demo feels alive; swap this whole
+   function for a fetch() to your backend's /translate endpoint. */
+function mockTranslate(raw) {
+  const text = raw.toLowerCase();
+  if (text.includes("429") || text.includes("rate_limit")) {
+    return "HubSpot rate limit exceeded. The workflow sent requests too quickly — space out the batch or add a delay node before retrying.";
+  }
+  if (text.includes("duplicate key")) {
+    return "This invoice was already inserted once before. The row already exists in Postgres, so re-running as-is will fail again until the duplicate is handled.";
+  }
+  if (text.includes("channel_not_found")) {
+    return "Slack can't find the target channel. It was likely renamed or archived — update the channel ID in this node before retrying.";
+  }
+  if (text.includes("401") || text.includes("incorrect api key")) {
+    return "OpenAI rejected the request — the API key on this node is invalid or has been rotated. Update the credential, then retry.";
+  }
+  if (text.includes("etimedout")) {
+    return "Shopify didn't respond in time. This looks like a transient network hiccup, not a config problem — safe to retry as-is.";
+  }
+  if (text.includes("invalid_grant")) {
+    return "The Gmail connection's login has expired. Reconnect the Google account on this node before retrying.";
+  }
+  return "This error doesn't match a known pattern yet — check the raw stack trace below.";
+}
+
+const errors = RAW_ERRORS.map((e, i) => ({
+  id: "err_" + i,
+  ...e,
+  translation: null
+}));
+
+/* ==========================================================================
+   STATE + RENDER
+   ========================================================================== */
+
+let activeFilter = "All";
+let openErrorId = null;
+
+const feedEl = document.getElementById("feed");
+const chipRowEl = document.getElementById("chipRow");
+const subheadEl = document.getElementById("subhead");
+
+function timeAgo(mins) {
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60);
+  return `${h}h ago`;
+}
+
+function renderChips() {
+  const filters = ["All", ...CLIENTS];
+  chipRowEl.innerHTML = filters.map(f =>
+    `<button class="chip ${f === activeFilter ? "active" : ""}" data-filter="${f}">${f}</button>`
+  ).join("");
+  chipRowEl.querySelectorAll(".chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      activeFilter = chip.dataset.filter;
+      renderChips();
+      renderFeed();
+    });
+  });
+}
+
+function renderFeed() {
+  const visible = errors.filter(e => activeFilter === "All" || e.client === activeFilter);
+  const failingCount = errors.filter(e => e.status === "failed").length;
+
+  subheadEl.textContent = failingCount === 0
+    ? "All workflows healthy"
+    : `${failingCount} workflow${failingCount === 1 ? "" : "s"} need attention`;
+
+  if (visible.length === 0) {
+    feedEl.innerHTML = `
+      <div class="empty-state">
+        <div class="glyph">✅</div>
+        <p>No errors for ${activeFilter} — all workflows healthy.</p>
+      </div>`;
+    return;
+  }
+
+  feedEl.innerHTML = visible.map(e => `
+    <button class="error-card" data-id="${e.id}">
+      <div class="card-top-row">
+        <div class="client-tag">
+          <span class="status-dot ${e.status}"></span>
+          ${e.client}
+        </div>
+        <span class="status-label ${e.status}">${e.status}</span>
+      </div>
+      <div class="workflow-name">${e.workflow}</div>
+      <div class="node-name">${e.node}</div>
+      <div class="card-bottom-row">
+        <span class="timestamp">${timeAgo(e.minutesAgo)}</span>
+        <span class="chevron">›</span>
+      </div>
+    </button>
+  `).join("");
+
+  feedEl.querySelectorAll(".error-card").forEach(card => {
+    card.addEventListener("click", () => openSheet(card.dataset.id));
+  });
+}
+
+/* ==========================================================================
+   DETAIL SHEET
+   ========================================================================== */
+
+const sheetEl = document.getElementById("sheet");
+const scrimEl = document.getElementById("scrim");
+const sheetScrollEl = document.getElementById("sheetScroll");
+const retryBtn = document.getElementById("retryBtn");
+const retryLabel = document.getElementById("retryLabel");
+
+function openSheet(id) {
+  openErrorId = id;
+  const e = errors.find(x => x.id === id);
+  renderSheetContent(e);
+  sheetEl.classList.add("open");
+  scrimEl.classList.add("open");
+  sheetEl.setAttribute("aria-hidden", "false");
+
+  // MOCK: simulate an LLM translation call if we don't have one cached yet.
+  if (!e.translation) {
+    setTimeout(() => {
+      e.translation = mockTranslate(e.raw);
+      if (openErrorId === id) renderSheetContent(e);
+    }, 650);
+  }
+
+  resetRetryButton(e);
+}
+
+function closeSheet() {
+  sheetEl.classList.remove("open");
+  scrimEl.classList.remove("open");
+  sheetEl.setAttribute("aria-hidden", "true");
+  openErrorId = null;
+}
+
+function renderSheetContent(e) {
+  sheetScrollEl.innerHTML = `
+    <div class="sheet-header">
+      <div class="client-tag" style="margin-bottom:8px;">
+        <span class="status-dot ${e.status}"></span>
+        ${e.client} · <span class="status-label ${e.status}" style="margin-left:2px;">${e.status}</span>
+      </div>
+      <div class="workflow-name">${e.workflow}</div>
+      <div class="node-name">${e.node}</div>
+    </div>
+
+    <div class="translation-card" style="margin-bottom:16px;">
+      <div class="translation-label">PLAIN ENGLISH</div>
+      ${e.translation
+        ? `<div class="translation-text">${e.translation}</div>`
+        : `<div class="translation-loading"><span class="spinner" style="border-top-color:var(--action); border-color:rgba(76,141,255,0.3); border-top-color:var(--action);"></span> Translating error…</div>`
+      }
+    </div>
+
+    <div class="accordion" id="traceAccordion" style="margin-bottom:16px;">
+      <button class="accordion-toggle" id="traceToggle">
+        Raw stack trace
+        <span class="chevron">›</span>
+      </button>
+      <div class="accordion-body">
+        <pre class="stack-trace">${e.raw}</pre>
+      </div>
+    </div>
+
+    <div class="meta-list">
+      <div><span>Client</span><span>${e.client}</span></div>
+      <div><span>Node</span><span>${e.node}</span></div>
+      <div><span>Last run</span><span>${timeAgo(e.minutesAgo)}</span></div>
+    </div>
+  `;
+
+  document.getElementById("traceToggle").addEventListener("click", () => {
+    document.getElementById("traceAccordion").classList.toggle("open");
+  });
+}
+
+function resetRetryButton(e) {
+  retryBtn.disabled = false;
+  retryBtn.classList.remove("resolved", "failed-again");
+  retryLabel.innerHTML =
+    e.status === "resolved" ? "Retry again" : "Retry workflow &nbsp;↻";
+}
+
+/* MOCK: simulates POSTing to n8n's webhook/API to re-trigger the workflow.
+   Swap the setTimeout below for something like:
+     await fetch(`${clientBaseUrl}/webhook/retry/${workflowId}`, { method: "POST", headers: {...} })
+*/
+retryBtn.addEventListener("click", () => {
+  if (!openErrorId) return;
+  const e = errors.find(x => x.id === openErrorId);
+
+  retryBtn.disabled = true;
+  retryLabel.innerHTML = `<span class="spinner"></span> Retrying…`;
+  e.status = "retrying";
+  renderFeed();
+
+  setTimeout(() => {
+    // MOCK: 80% of retries succeed, just to show both outcomes.
+    const succeeded = Math.random() < 0.8;
+    e.status = succeeded ? "resolved" : "failed";
+    e.minutesAgo = 0;
+
+    retryBtn.disabled = false;
+    if (succeeded) {
+      retryBtn.classList.add("resolved");
+      retryLabel.textContent = "Resolved ✓";
+    } else {
+      retryBtn.classList.add("failed-again");
+      retryLabel.textContent = "Still failing — retry again";
+    }
+    renderFeed();
+  }, 1400);
+});
+
+scrimEl.addEventListener("click", closeSheet);
+
+/* ==========================================================================
+   INIT
+   MOCK: simulates the initial webhook-feed fetch with a short delay so the
+   loading state in the subhead is visible, the way a real network call
+   would behave.
+   ========================================================================== */
+setTimeout(() => {
+  renderChips();
+  renderFeed();
+}, 400);
+
+/* ==========================================================================
+   SERVICE WORKER REGISTRATION
+   ========================================================================== */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(err => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+</script>
+</body>
+</html>
