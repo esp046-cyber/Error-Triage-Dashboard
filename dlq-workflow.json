@@ -1,0 +1,169 @@
+{
+  "name": "Error Triage - Dead Letter Queue (DLQ)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      },
+      "id": "schedule-hourly",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.N8N_BASE_URL}}/api/v1/executions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "status", "value": "error" },
+            { "name": "limit", "value": "100" },
+            { "name": "includeData", "value": "true" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-fetch-stale-executions",
+      "name": "Fetch Failed Executions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "credentials": {
+        "n8nApi": { "id": "REPLACE_WITH_YOUR_N8N_API_CREDENTIAL_ID", "name": "n8n account" }
+      }
+    },
+    {
+      "parameters": { "fieldToSplitOut": "data", "options": {} },
+      "id": "split-out-stale",
+      "name": "Split Out Executions",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "older-than-24h",
+              "leftValue": "={{ (Date.now() - new Date($json.startedAt).getTime()) / (1000 * 60 * 60) }}",
+              "rightValue": 24,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-older-than-24h",
+      "name": "Still Failing After 24h?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "executionId", "type": "string", "value": "={{$json.id}}" },
+            { "name": "workflowName", "type": "string", "value": "={{$json.workflowData.name}}" },
+            {
+              "name": "client",
+              "type": "string",
+              "value": "={{$json.workflowData.tags && $json.workflowData.tags.length ? $json.workflowData.tags[0].name : 'Unassigned'}}"
+            },
+            {
+              "name": "rawError",
+              "type": "string",
+              "value": "={{JSON.stringify($json.data && $json.data.resultData && $json.data.resultData.error ? $json.data.resultData.error : {message: 'No error detail available.'})}}"
+            },
+            { "name": "startedAt", "type": "string", "value": "={{$json.startedAt}}" },
+            { "name": "archivedAt", "type": "string", "value": "={{$now.toISO()}}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "shape-dlq-record",
+      "name": "Shape DLQ Record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1180, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "DLQ Log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Execution ID": "={{$json.executionId}}",
+            "Client": "={{$json.client}}",
+            "Workflow": "={{$json.workflowName}}",
+            "Started At": "={{$json.startedAt}}",
+            "Archived At": "={{$json.archivedAt}}",
+            "Raw Error": "={{$json.rawError}}"
+          }
+        },
+        "options": {}
+      },
+      "id": "append-google-sheet",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1420, 220],
+      "notesInFlow": true,
+      "notes": "Swap this node for a Postgres 'Insert' node (same field mapping) if you'd rather log to a database instead of Google Sheets.",
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_WITH_YOUR_GOOGLE_SHEETS_CREDENTIAL_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{$env.N8N_BASE_URL}}/api/v1/executions/{{$json.executionId}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "options": {}
+      },
+      "id": "delete-execution",
+      "name": "Clear From Execution History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1660, 220],
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Optional. Deletes the execution record from n8n's history now that it's permanently logged above. Remove this node if you'd rather keep n8n's own history untouched and rely on n8n's built-in execution pruning settings instead.",
+      "credentials": {
+        "n8nApi": { "id": "REPLACE_WITH_YOUR_N8N_API_CREDENTIAL_ID", "name": "n8n account" }
+      }
+    }
+  ],
+  "connections": {
+    "Every Hour": { "main": [[{ "node": "Fetch Failed Executions", "type": "main", "index": 0 }]] },
+    "Fetch Failed Executions": { "main": [[{ "node": "Split Out Executions", "type": "main", "index": 0 }]] },
+    "Split Out Executions": { "main": [[{ "node": "Still Failing After 24h?", "type": "main", "index": 0 }]] },
+    "Still Failing After 24h?": { "main": [[{ "node": "Shape DLQ Record", "type": "main", "index": 0 }]] },
+    "Shape DLQ Record": { "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]] },
+    "Log to Google Sheets": { "main": [[{ "node": "Clear From Execution History", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "instanceId": "replace-with-your-n8n-instance-id" },
+  "id": "error-triage-dlq",
+  "tags": []
+}

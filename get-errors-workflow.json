@@ -1,14 +1,12 @@
 {
-  "name": "Error Triage - Get Errors API",
+  "name": "Error Triage - Get Errors API (v2 - Circuit Breaker + Push)",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "GET",
         "path": "get-errors",
         "responseMode": "responseNode",
-        "options": {
-          "allowedOrigins": "*"
-        }
+        "options": { "allowedOrigins": "*" }
       },
       "id": "webhook-get-errors",
       "name": "Webhook - Get Errors",
@@ -39,17 +37,11 @@
       "typeVersion": 4.2,
       "position": [460, 300],
       "credentials": {
-        "n8nApi": {
-          "id": "REPLACE_WITH_YOUR_N8N_API_CREDENTIAL_ID",
-          "name": "n8n account"
-        }
+        "n8nApi": { "id": "REPLACE_WITH_YOUR_N8N_API_CREDENTIAL_ID", "name": "n8n account" }
       }
     },
     {
-      "parameters": {
-        "fieldToSplitOut": "data",
-        "options": {}
-      },
+      "parameters": { "fieldToSplitOut": "data", "options": {} },
       "id": "split-out-executions",
       "name": "Split Out Executions",
       "type": "n8n-nodes-base.splitOut",
@@ -60,36 +52,20 @@
       "parameters": {
         "assignments": {
           "assignments": [
-            {
-              "name": "executionId",
-              "type": "string",
-              "value": "={{$json.id}}"
-            },
-            {
-              "name": "workflowName",
-              "type": "string",
-              "value": "={{$json.workflowData.name}}"
-            },
+            { "name": "executionId", "type": "string", "value": "={{$json.id}}" },
+            { "name": "workflowName", "type": "string", "value": "={{$json.workflowData.name}}" },
             {
               "name": "client",
               "type": "string",
               "value": "={{$json.workflowData.tags && $json.workflowData.tags.length ? $json.workflowData.tags[0].name : 'Unassigned'}}"
             },
-            {
-              "name": "status",
-              "type": "string",
-              "value": "failed"
-            },
+            { "name": "status", "type": "string", "value": "failed" },
             {
               "name": "rawError",
               "type": "string",
               "value": "={{JSON.stringify($json.data && $json.data.resultData && $json.data.resultData.error ? $json.data.resultData.error : {message: 'No error detail returned by /executions for this run.'})}}"
             },
-            {
-              "name": "startedAt",
-              "type": "string",
-              "value": "={{$json.startedAt}}"
-            }
+            { "name": "startedAt", "type": "string", "value": "={{$json.startedAt}}" }
           ]
         },
         "options": {}
@@ -123,56 +99,25 @@
       "typeVersion": 4.2,
       "position": [1180, 300],
       "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_ANTHROPIC_CREDENTIAL_ID",
-          "name": "Anthropic API key"
-        }
+        "httpHeaderAuth": { "id": "REPLACE_WITH_YOUR_ANTHROPIC_CREDENTIAL_ID", "name": "Anthropic API key" }
       }
     },
     {
       "parameters": {
         "assignments": {
           "assignments": [
-            {
-              "name": "executionId",
-              "type": "string",
-              "value": "={{$('Shape Execution Fields').item.json.executionId}}"
-            },
-            {
-              "name": "client",
-              "type": "string",
-              "value": "={{$('Shape Execution Fields').item.json.client}}"
-            },
-            {
-              "name": "workflow",
-              "type": "string",
-              "value": "={{$('Shape Execution Fields').item.json.workflowName}}"
-            },
+            { "name": "executionId", "type": "string", "value": "={{$('Shape Execution Fields').item.json.executionId}}" },
+            { "name": "client", "type": "string", "value": "={{$('Shape Execution Fields').item.json.client}}" },
+            { "name": "workflow", "type": "string", "value": "={{$('Shape Execution Fields').item.json.workflowName}}" },
             {
               "name": "node",
               "type": "string",
               "value": "={{ (() => { try { return JSON.parse($('Shape Execution Fields').item.json.rawError).node?.name || 'Unknown node'; } catch(e) { return 'Unknown node'; } })() }}"
             },
-            {
-              "name": "status",
-              "type": "string",
-              "value": "failed"
-            },
-            {
-              "name": "raw",
-              "type": "string",
-              "value": "={{$('Shape Execution Fields').item.json.rawError}}"
-            },
-            {
-              "name": "translation",
-              "type": "string",
-              "value": "={{$json.content[0].text}}"
-            },
-            {
-              "name": "startedAt",
-              "type": "string",
-              "value": "={{$('Shape Execution Fields').item.json.startedAt}}"
-            }
+            { "name": "status", "type": "string", "value": "failed" },
+            { "name": "raw", "type": "string", "value": "={{$('Shape Execution Fields').item.json.rawError}}" },
+            { "name": "translation", "type": "string", "value": "={{$json.content[0].text}}" },
+            { "name": "startedAt", "type": "string", "value": "={{$('Shape Execution Fields').item.json.startedAt}}" }
           ]
         },
         "options": {}
@@ -185,6 +130,17 @@
     },
     {
       "parameters": {
+        "jsMode": "runOnceForAllItems",
+        "jsCode": "// Flags each item with:\n//  - isNew: true the first time this executionId is ever seen by this workflow\n//  - circuitBroken: true if this workflow has failed >3 times in the last hour\n// Persisted in this workflow's static data so it survives between runs\n// without needing an external database.\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.seenExecutionIds) staticData.seenExecutionIds = [];\n\nconst items = $input.all();\nconst nowMs = Date.now();\nconst ONE_HOUR = 60 * 60 * 1000;\n\nconst countsByWorkflow = {};\nfor (const item of items) {\n  const startedAtMs = new Date(item.json.startedAt).getTime();\n  if (nowMs - startedAtMs <= ONE_HOUR) {\n    const key = item.json.workflow;\n    countsByWorkflow[key] = (countsByWorkflow[key] || 0) + 1;\n  }\n}\n\nconst seen = new Set(staticData.seenExecutionIds);\n\nfor (const item of items) {\n  const id = item.json.executionId;\n  item.json.isNew = !seen.has(id);\n  seen.add(id);\n  item.json.circuitBroken = (countsByWorkflow[item.json.workflow] || 0) > 3;\n}\n\n// Cap stored history so static data doesn't grow unbounded.\nstaticData.seenExecutionIds = [...seen].slice(-500);\n\nreturn items;"
+      },
+      "id": "compute-flags",
+      "name": "Compute New + Circuit Breaker Flags",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1660, 300]
+    },
+    {
+      "parameters": {
         "aggregate": "aggregateAllItemData",
         "destinationFieldName": "errors",
         "options": {}
@@ -193,7 +149,7 @@
       "name": "Aggregate Into Array",
       "type": "n8n-nodes-base.aggregate",
       "typeVersion": 1,
-      "position": [1660, 300]
+      "position": [1900, 200]
     },
     {
       "parameters": {
@@ -212,36 +168,110 @@
       "name": "Respond With Errors",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1900, 300]
+      "position": [2140, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "is-new-error",
+              "leftValue": "={{$json.isNew}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-new-errors",
+      "name": "Filter New Errors For Push",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1900, 420]
+    },
+    {
+      "parameters": {
+        "jsMode": "runOnceForAllItems",
+        "jsCode": "// Sends a real Web Push notification to every subscribed browser using\n// the 'web-push' npm package. This ONLY works on self-hosted n8n with:\n//   NODE_FUNCTION_ALLOW_EXTERNAL=web-push\n// set as an environment variable, and `npm install web-push` run inside\n// the n8n installation. n8n Cloud's sandboxed Code node cannot require()\n// external packages, so push will silently no-op there — see SETUP.md.\n//\n// Requires N8N env vars: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY\n// (generate with: npx web-push generate-vapid-keys)\n\nconst staticData = $getWorkflowStaticData('global');\nconst subscriptions = staticData.pushSubscriptions || [];\nif (subscriptions.length === 0) return [];\n\nlet webpush;\ntry {\n  webpush = require('web-push');\n} catch (e) {\n  return []; // web-push isn't installed/allowed in this n8n environment\n}\n\nwebpush.setVapidDetails(\n  'mailto:you@example.com',\n  $env.VAPID_PUBLIC_KEY,\n  $env.VAPID_PRIVATE_KEY\n);\n\nconst items = $input.all();\nconst stillValid = [];\n\nfor (const sub of subscriptions) {\n  let expired = false;\n  for (const item of items) {\n    const payload = JSON.stringify({\n      title: 'Where Did It Break?',\n      body: `${item.json.client}: ${item.json.translation || (item.json.workflow + ' failed')}`,\n      url: './'\n    });\n    try {\n      await webpush.sendNotification(sub, payload);\n    } catch (err) {\n      if (err.statusCode === 404 || err.statusCode === 410) expired = true;\n    }\n  }\n  if (!expired) stillValid.push(sub);\n}\n\nstaticData.pushSubscriptions = stillValid;\nreturn items;"
+      },
+      "id": "send-push",
+      "name": "Send Push Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 420]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "subscribe-push",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "webhook-subscribe-push",
+      "name": "Webhook - Subscribe Push",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 620],
+      "webhookId": "subscribe-push-webhook"
+    },
+    {
+      "parameters": {
+        "jsMode": "runOnceForAllItems",
+        "jsCode": "// Stores the browser's PushSubscription object in this workflow's static\n// data, keyed by endpoint so re-subscribing doesn't create duplicates.\n// Shared static data is why this endpoint lives in the SAME n8n workflow\n// as Send Push Notifications above (static data is per-workflow, not global).\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.pushSubscriptions) staticData.pushSubscriptions = [];\n\nconst sub = $input.first().json.body;\nconst exists = staticData.pushSubscriptions.some(s => s.endpoint === sub.endpoint);\nif (!exists && sub && sub.endpoint) {\n  staticData.pushSubscriptions.push(sub);\n}\n\nreturn [{ json: { success: true } }];"
+      },
+      "id": "store-subscription",
+      "name": "Store Subscription",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 620]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true } }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      },
+      "id": "respond-subscribed",
+      "name": "Respond Subscribed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [700, 620]
     }
   ],
   "connections": {
-    "Webhook - Get Errors": {
-      "main": [[{ "node": "Fetch Failed Executions", "type": "main", "index": 0 }]]
+    "Webhook - Get Errors": { "main": [[{ "node": "Fetch Failed Executions", "type": "main", "index": 0 }]] },
+    "Fetch Failed Executions": { "main": [[{ "node": "Split Out Executions", "type": "main", "index": 0 }]] },
+    "Split Out Executions": { "main": [[{ "node": "Shape Execution Fields", "type": "main", "index": 0 }]] },
+    "Shape Execution Fields": { "main": [[{ "node": "Translate Error (Claude)", "type": "main", "index": 0 }]] },
+    "Translate Error (Claude)": { "main": [[{ "node": "Shape Final Error Object", "type": "main", "index": 0 }]] },
+    "Shape Final Error Object": { "main": [[{ "node": "Compute New + Circuit Breaker Flags", "type": "main", "index": 0 }]] },
+    "Compute New + Circuit Breaker Flags": {
+      "main": [
+        [
+          { "node": "Aggregate Into Array", "type": "main", "index": 0 },
+          { "node": "Filter New Errors For Push", "type": "main", "index": 0 }
+        ]
+      ]
     },
-    "Fetch Failed Executions": {
-      "main": [[{ "node": "Split Out Executions", "type": "main", "index": 0 }]]
-    },
-    "Split Out Executions": {
-      "main": [[{ "node": "Shape Execution Fields", "type": "main", "index": 0 }]]
-    },
-    "Shape Execution Fields": {
-      "main": [[{ "node": "Translate Error (Claude)", "type": "main", "index": 0 }]]
-    },
-    "Translate Error (Claude)": {
-      "main": [[{ "node": "Shape Final Error Object", "type": "main", "index": 0 }]]
-    },
-    "Shape Final Error Object": {
-      "main": [[{ "node": "Aggregate Into Array", "type": "main", "index": 0 }]]
-    },
-    "Aggregate Into Array": {
-      "main": [[{ "node": "Respond With Errors", "type": "main", "index": 0 }]]
-    }
+    "Aggregate Into Array": { "main": [[{ "node": "Respond With Errors", "type": "main", "index": 0 }]] },
+    "Filter New Errors For Push": { "main": [[{ "node": "Send Push Notifications", "type": "main", "index": 0 }]] },
+    "Webhook - Subscribe Push": { "main": [[{ "node": "Store Subscription", "type": "main", "index": 0 }]] },
+    "Store Subscription": { "main": [[{ "node": "Respond Subscribed", "type": "main", "index": 0 }]] }
   },
   "pinData": {},
   "settings": { "executionOrder": "v1" },
   "staticData": null,
   "meta": { "instanceId": "replace-with-your-n8n-instance-id" },
-  "id": "error-triage-get-errors",
+  "id": "error-triage-get-errors-v2",
   "tags": []
 }

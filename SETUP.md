@@ -1,109 +1,147 @@
-# Wiring up the live backend
+# Setup — v3 (native iOS features + advanced n8n routing)
 
-This turns the static PWA from mock data into a live dashboard backed by two
-n8n workflows. Five files ship together:
+## What's new in this version
 
-- `index.html`, `manifest.json`, `sw.js`, `icon-192.png`, `icon-512.png` — the PWA (upload to GitHub Pages, same as before)
-- `get-errors-workflow.json` — import into n8n, powers `GET /get-errors`
-- `retry-error-workflow.json` — import into n8n, powers `POST /retry-error`
+- **Files split**: `index.html`, `styles.css`, `app.js` (was one file)
+- **Push notifications** for new errors (Safari 16.4+, installed PWA only)
+- **App icon badge** showing the unresolved error count
+- **In-app settings**: polling interval slider, client-tag filter dropdown, Clear Local Cache button
+- **Circuit breaker**: workflows that fail >3 times in an hour get flagged in the UI, with a confirmation before you retry into the same failure
+- **Dead Letter Queue (DLQ)**: a new hourly workflow that permanently logs anything still failing after 24 hours, before it ages out of n8n's history
 
-## 1. Generate an n8n API key
+Read this in order — some pieces (push) are meaningfully more involved than everything before it, and won't work on n8n Cloud (see below).
 
-Both workflows call n8n's own REST API (`/api/v1/executions`) to read and
-retry executions, so n8n needs to be able to authenticate to itself.
+## 0. Deploy the frontend files
 
-1. In your n8n instance: **Settings → n8n API → Create an API key**.
-2. Copy the key immediately — n8n only shows it once.
-3. In n8n, go to **Credentials → New → n8n API**, paste the key in, and save
-   it (e.g. name it "n8n account"). This is the credential both imported
-   workflows expect on their HTTP Request nodes.
-4. Note your instance's base URL (e.g. `https://your-instance.app.n8n.cloud`
-   or your self-hosted domain) — you'll set it as an environment variable
-   next.
+Upload all of these to your GitHub repo root, replacing the old single
+`index.html`:
 
-## 2. Set N8N_BASE_URL
+```
+index.html
+styles.css
+app.js
+sw.js
+manifest.json
+icon-192.png
+icon-512.png
+splash-1242x2208.png
+splash-1125x2436.png
+```
 
-The workflows reference `{{$env.N8N_BASE_URL}}` so the same blueprint works
-across environments without hardcoding a URL.
+Nothing in these needs manual editing except optionally `VAPID_PUBLIC_KEY`
+in `app.js` (step 3). The webhook URL, polling interval, and client filter
+are all configured in-app via the ⚙️ Settings sheet, as before.
 
-- **Self-hosted**: add `N8N_BASE_URL=https://your-domain.com` to your n8n
-  environment variables (`.env` file or however you configure the n8n
-  process), then restart n8n.
-- **n8n Cloud**: go to **Settings → Variables → Add Variable**, name it
-  `N8N_BASE_URL`, set it to your instance URL.
+## 1. Basic setup (webhook URL, translation, retry)
 
-## 3. Add an Anthropic API credential
+Same as before — see the earlier setup steps if this is your first time:
+n8n API key, `N8N_BASE_URL`, Anthropic credential, import
+`get-errors-workflow.json` and `retry-error-workflow.json`, activate both,
+paste the webhook base URL into the app's Settings sheet.
 
-The `get-errors` workflow's "Translate Error (Claude)" node needs an API
-key to call `api.anthropic.com`.
+**Re-importing note:** this `get-errors-workflow.json` is a new version
+(adds circuit breaker + push + a `/subscribe-push` endpoint). If you already
+imported the v1 blueprint, either replace that workflow entirely with this
+one, or manually add the new nodes — re-importing as a new workflow is
+easier and won't affect `retry-error-workflow.json`.
 
-1. Get a key from the [Anthropic Console](https://console.anthropic.com/).
-2. In n8n: **Credentials → New → Header Auth**. Set the header name to
-   `x-api-key` and the value to your key. Save it (e.g. "Anthropic API key").
-3. After importing `get-errors-workflow.json`, open the "Translate Error
-   (Claude)" node and select this credential (n8n doesn't export credential
-   secrets, so you'll need to re-attach it once after import).
+## 2. Circuit breaker (works out of the box)
 
-## 4. Import both workflows
+No extra setup — it's computed from data you already have. A workflow is
+flagged `circuitBroken` when it's failed more than 3 times in the last hour,
+using each workflow's own static data as a lightweight counter (no database
+needed). In the app, flagged errors show an amber "⚡ Circuit broken" badge
+and ask for confirmation before retrying.
 
-1. In n8n: **Workflows → Import from File** → select `get-errors-workflow.json`.
-2. Repeat for `retry-error-workflow.json`.
-3. In each imported workflow, re-select your **n8n API** credential on the
-   HTTP Request nodes that call `/api/v1/executions` (n8n strips credential
-   references on import as a security measure).
-4. **Activate** both workflows (toggle in the top-right of each workflow).
-5. Each workflow's Webhook node shows a **Production URL** once active —
-   confirm they end in `/webhook/get-errors` and `/webhook/retry-error`.
+## 3. Push notifications — **read this before enabling**
 
-## 5. Tag workflows by client (optional but recommended)
+Real Web Push requires signing messages with a VAPID key pair, using the
+`web-push` npm package inside n8n's Code node. This has one hard
+requirement:
 
-The `get-errors` workflow reads the client name from the failing workflow's
-first **tag**. In each of your client-facing n8n workflows, add a tag with
-the client's name (e.g. "Acme Corp") so the dashboard can group and filter
-by client. Untagged workflows show up under "Unassigned."
+> **Push notifications only work on self-hosted n8n.** n8n Cloud's Code
+> node runs in a sandbox that cannot `require()` external npm packages, so
+> the push-sending node will silently no-op there. If you're on n8n Cloud,
+> skip this section — everything else in the app works fine without it.
 
-## 6. Configure the app — no code editing required
+If you're self-hosted:
 
-Deploy `index.html`, `manifest.json`, `sw.js`, and the icons to GitHub Pages
-exactly as they are — nothing in these files needs to change.
+1. On the machine running n8n, install the package once:
+   ```bash
+   npm install web-push
+   ```
+   (If n8n runs in Docker, install it inside the container's n8n directory,
+   or bake it into a custom image — exact path depends on your setup.)
+2. Set the environment variable that allows the Code node to use it:
+   ```
+   NODE_FUNCTION_ALLOW_EXTERNAL=web-push
+   ```
+   Restart n8n after setting this.
+3. Generate a VAPID key pair:
+   ```bash
+   npx web-push generate-vapid-keys
+   ```
+4. Set two more n8n environment variables: `VAPID_PUBLIC_KEY` and
+   `VAPID_PRIVATE_KEY`, using the values just generated.
+5. In `app.js`, find:
+   ```js
+   const VAPID_PUBLIC_KEY = "PASTE_YOUR_VAPID_PUBLIC_KEY_HERE";
+   ```
+   and paste in the **public** key only (the private key stays server-side,
+   never in the frontend). Re-upload `app.js`.
+6. On the iPhone: the PWA **must be installed to the home screen** first —
+   Safari does not allow push permission prompts or subscriptions from a
+   regular browser tab, even with everything else configured correctly.
+7. Open the installed app → Settings (gear icon) → **Enable** under
+   Notifications → accept the iOS permission prompt. You should see
+   "✅ Notifications are on for this device."
+8. Trigger a real new failure (or wait for one) — a push should arrive
+   within about a minute (the workflow only pushes for errors it hasn't
+   seen before, so re-polling the same error won't re-notify you).
 
-1. Open the deployed app. On first launch it shows a **"Welcome!"** screen
-   since no webhook URL is saved yet.
-2. Tap **Configure Now** (or the ⚙️ gear icon in the header any time after).
-3. Paste your n8n webhook base URL — everything up to and including
-   `/webhook`, e.g. `https://your-instance.app.n8n.cloud/webhook`.
-4. Tap **Test Connection**. It should turn green with "✅ Connected" within
-   a few seconds — that confirms both the URL and the `get-errors` workflow
-   are reachable before you commit to it.
-5. Tap **Save & Connect**. The URL is stored in this browser's
-   `localStorage`, the onboarding screen disappears, and polling starts
-   immediately.
+**If it doesn't work:** open Safari's Web Inspector (connect the iPhone to
+a Mac, Safari → Develop menu) and check the console for errors from
+`enablePushNotifications()`, and check n8n's execution log for the "Send
+Push Notifications" node — a caught `require('web-push')` failure there
+means step 1–2 above didn't take effect.
 
-This is per-browser: if you open the app in a different browser or clear
-site data, you'll see the onboarding screen again and need to re-paste the
-URL. Re-open Settings via the gear icon any time to check or change it.
+## 4. App icon badge
 
-## 7. CORS
+Works automatically once the app is installed to the home screen, no setup
+needed. It shows the current count of `failed` errors and clears itself
+when everything's resolved. Support varies by iOS version — the app
+feature-detects and simply skips this if `navigator.setAppBadge` isn't
+available.
 
-Both webhook nodes are configured with `allowedOrigins: "*"` so requests
-from your GitHub Pages origin are allowed. If you see CORS errors in Safari's
-console after deploying:
+## 5. Dead Letter Queue (DLQ)
 
-- Narrow `allowedOrigins` to your exact Pages URL once things work (e.g.
-  `https://your-username.github.io`) instead of leaving it as `*`.
-- The retry POST sends a JSON body, which triggers a CORS **preflight**
-  (an automatic `OPTIONS` request) from the browser. Recent n8n versions
-  handle this automatically when `allowedOrigins` is set on the Webhook
-  node; if you're on an older version and see preflight failures, add a
-  second Webhook node on the same path listening for `OPTIONS` that
-  immediately responds 200 with the same CORS headers.
+1. Set up a Google Sheet with a tab named exactly `DLQ Log` and these
+   column headers in row 1: `Execution ID`, `Client`, `Workflow`,
+   `Started At`, `Archived At`, `Raw Error`.
+2. In n8n, add a **Google Sheets OAuth2** credential (Credentials → New →
+   Google Sheets OAuth2 API) and sign in.
+3. Import `dlq-workflow.json`.
+4. Open the **Log to Google Sheets** node: select your new credential, and
+   set the Sheet ID to your spreadsheet's ID (the long string in its URL).
+5. Re-select your **n8n API** credential on both HTTP Request nodes
+   (import strips credential references, as before).
+6. **Activate** the workflow. It runs every hour, finds executions still
+   failing after 24 hours, logs them to the sheet, and then deletes them
+   from n8n's execution history via the API.
+7. Prefer Postgres over Google Sheets? Replace the **Log to Google Sheets**
+   node with a Postgres **Insert** node using the same six fields — the
+   upstream data shape is identical either way.
+8. If you'd rather n8n's execution history stay untouched (and just rely
+   on n8n's own execution-pruning settings), delete the **Clear From
+   Execution History** node — the Google Sheets log will still happen.
 
-## 8. Verify
+## 6. Everything else (recap from before)
 
-- Open the deployed PWA — the subhead should change from "Loading…" to a
-  real count within a few seconds.
-- Trigger a real failure in one of your n8n workflows (or temporarily break
-  a node) and confirm it appears in the feed within 10 seconds (the poll
-  interval).
-- Tap into it, confirm the Claude-generated plain-English translation shows
-  up, then tap **Retry workflow** and confirm the execution re-runs in n8n.
+- **Test Connection** in Settings still works the same way.
+- **Refresh Interval slider** (5s/15s/60s) is purely client-side — no n8n
+  changes needed, it just changes how often the app polls.
+- **Client Tag dropdown** in Settings mirrors the filter chips on the main
+  screen — both read from the same `client` field (your workflow tags).
+- **Clear Local Cache** wipes this device's saved webhook URL, poll
+  setting, and cached files, then reloads to the onboarding screen. Use it
+  if the app seems stuck or Safari's storage limits are causing issues.
