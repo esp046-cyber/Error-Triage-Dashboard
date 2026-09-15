@@ -145,3 +145,32 @@ available.
 - **Clear Local Cache** wipes this device's saved webhook URL, poll
   setting, and cached files, then reloads to the onboarding screen. Use it
   if the app seems stuck or Safari's storage limits are causing issues.
+
+## 7. API key / Header Auth (v4)
+
+The app now has an optional **n8n Webhook Auth Token** field in Settings.
+When set, every request (`get-errors`, `retry-error`, `subscribe-push`,
+and Test Connection) sends `Authorization: Bearer <token>`.
+
+This is client-side only — the token is just a header the app attaches.
+For it to actually protect anything, add **Header Auth** to each Webhook
+node in your n8n workflows:
+
+1. In each Webhook trigger node (Get Errors, Retry Error, Subscribe Push),
+   set **Authentication** to **Header Auth**.
+2. Create a Header Auth credential: header name `Authorization`, value
+   `Bearer <your-chosen-token>` (pick any long random string).
+3. Use that same token in the app's Settings sheet.
+
+Leave the field blank if you don't want this — everything works exactly as
+before without it.
+
+## 8. Fatal error recovery
+
+If the app hits an unrecoverable JavaScript error (corrupted localStorage,
+an unexpected exception during startup, or a stray unhandled promise
+rejection), it now shows a "Something went wrong" screen instead of going
+blank, with a **Clear Cache & Reload** button. This wipes local settings
+(webhook URL, token, poll interval) and cached files, then reloads to the
+onboarding screen — the same effect as the Clear Local Cache button in
+Settings, just reachable even if the rest of the UI is broken.

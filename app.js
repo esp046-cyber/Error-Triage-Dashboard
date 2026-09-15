@@ -1,10 +1,76 @@
 /* ==========================================================================
+   GLOBAL ERROR BOUNDARY
+   Catches catastrophic failures (corrupted localStorage, unexpected runtime
+   errors, unhandled promise rejections) and shows a clean recovery screen
+   instead of leaving the user staring at a blank white page.
+   Registered first, before anything else in this file runs.
+   ========================================================================== */
+
+function showFatalError(message) {
+  const overlay = document.getElementById("fatalOverlay");
+  const messageEl = document.getElementById("fatalMessage");
+  if (!overlay) {
+    // Overlay markup is itself missing or broken — fall back to a native
+    // alert so the user still gets *something* instead of total silence.
+    alert(message || "Something went wrong. Please reload the app.");
+    return;
+  }
+  if (messageEl && message) messageEl.textContent = message;
+  overlay.style.display = "flex";
+}
+
+function hideFatalError() {
+  const overlay = document.getElementById("fatalOverlay");
+  if (overlay) overlay.style.display = "none";
+}
+
+async function clearEverythingAndReload() {
+  try {
+    localStorage.clear();
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+  } catch (err) {
+    console.error("Failed to clear cache during fatal recovery:", err);
+  } finally {
+    location.reload();
+  }
+}
+
+window.addEventListener("error", (event) => {
+  console.error("Uncaught error:", event.error || event.message);
+  showFatalError(
+    "The app hit an unexpected error and can't continue safely. Clearing its local cache usually fixes this."
+  );
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("Unhandled promise rejection:", event.reason);
+  showFatalError(
+    "A background request failed unexpectedly. Clearing local cache and reloading usually resolves this."
+  );
+});
+
+// These elements already exist in the DOM by the time this runs, since
+// app.js is loaded at the end of <body>.
+const fatalClearCacheBtn = document.getElementById("fatalClearCacheBtn");
+const fatalDismissBtn = document.getElementById("fatalDismissBtn");
+if (fatalClearCacheBtn) fatalClearCacheBtn.addEventListener("click", clearEverythingAndReload);
+if (fatalDismissBtn) fatalDismissBtn.addEventListener("click", hideFatalError);
+
+/* ==========================================================================
    ZERO-CODE CONFIG
    The n8n webhook base URL lives in this browser's localStorage instead of
    being hardcoded — set once via the ⚙️ Settings sheet, no file editing.
    ========================================================================== */
 
 const STORAGE_KEY = "wdib_webhook_base";
+const AUTH_TOKEN_KEY = "wdib_auth_token";
 const POLL_STORAGE_KEY = "wdib_poll_ms";
 const POLL_OPTIONS_MS = [5000, 15000, 60000]; // slider positions 0/1/2
 const DEFAULT_POLL_MS = 10000;
@@ -23,6 +89,32 @@ function getWebhookBase() {
 }
 function setWebhookBase(url) {
   localStorage.setItem(STORAGE_KEY, url.trim().replace(/\/$/, ""));
+}
+function getAuthToken() {
+  return (localStorage.getItem(AUTH_TOKEN_KEY) || "").trim();
+}
+function setAuthToken(token) {
+  const trimmed = token.trim();
+  if (trimmed) {
+    localStorage.setItem(AUTH_TOKEN_KEY, trimmed);
+  } else {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+}
+/* Shared request headers. Adds Authorization only when a token is set, so
+   instances that don't use Header Auth on their webhook nodes keep working
+   unchanged. n8n's webhook nodes are expected to validate this token via a
+   Header Auth credential — see SETUP.md. */
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  const token = getAuthToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+function authHeadersWithToken(token, extra = {}) {
+  const headers = { ...extra };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
 }
 function isConfigured() {
   return getWebhookBase().length > 0;
@@ -230,7 +322,7 @@ retryBtn.addEventListener("click", async () => {
   try {
     const res = await fetch(retryErrorUrl(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ executionId: e.executionId })
     });
     const data = await res.json();
@@ -273,7 +365,7 @@ function setConnBanner(show, message) {
 async function fetchErrors() {
   if (!isConfigured()) return;
   try {
-    const res = await fetch(getErrorsUrl(), { headers: { "Accept": "application/json" } });
+    const res = await fetch(getErrorsUrl(), { headers: authHeaders({ "Accept": "application/json" }) });
     if (!res.ok) throw new Error(`Backend returned ${res.status}`);
     const data = await res.json();
 
@@ -391,7 +483,7 @@ async function enablePushNotifications() {
 
     await fetch(subscribePushUrl(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(subscription)
     });
 
@@ -436,6 +528,7 @@ const configureNowBtn = document.getElementById("configureNowBtn");
 const settingsSheetEl = document.getElementById("settingsSheet");
 const settingsScrimEl = document.getElementById("settingsScrim");
 const webhookInput = document.getElementById("webhookInput");
+const authTokenInput = document.getElementById("authTokenInput");
 const testConnBtn = document.getElementById("testConnBtn");
 const testResultEl = document.getElementById("testResult");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
@@ -453,6 +546,7 @@ function showOnboarding(show) {
 
 function openSettings() {
   webhookInput.value = getWebhookBase();
+  authTokenInput.value = getAuthToken();
   testResultEl.textContent = "";
   testResultEl.className = "test-result";
 
@@ -491,11 +585,12 @@ testConnBtn.addEventListener("click", async () => {
   testResultEl.className = "test-result testing";
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const testToken = authTokenInput.value.trim();
 
   try {
     const res = await fetch(`${url}/get-errors`, {
-      headers: { "Accept": "application/json" },
+      headers: authHeadersWithToken(testToken, { "Accept": "application/json" }),
       signal: controller.signal
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -504,7 +599,14 @@ testConnBtn.addEventListener("click", async () => {
     testResultEl.className = "test-result success";
   } catch (err) {
     console.error("Connection test failed:", err);
-    testResultEl.textContent = "❌ Connection failed";
+    if (err.name === "AbortError") {
+      // No response within the timeout — most commonly a CORS preflight
+      // being silently dropped, or the n8n instance simply being offline.
+      testResultEl.textContent =
+        "❌ Connection timed out. Please ensure your n8n instance is running and that CORS is enabled for this domain.";
+    } else {
+      testResultEl.textContent = "❌ Connection failed";
+    }
     testResultEl.className = "test-result fail";
   } finally {
     clearTimeout(timeoutId);
@@ -520,6 +622,7 @@ saveSettingsBtn.addEventListener("click", () => {
     return;
   }
   setWebhookBase(url);
+  setAuthToken(authTokenInput.value);
   setPollMs(POLL_OPTIONS_MS[Number(pollSlider.value)]);
   closeSettings();
   showOnboarding(false);
@@ -556,22 +659,7 @@ clearCacheBtn.addEventListener("click", async () => {
     "This clears saved settings and cached data on this device, including your webhook URL. Continue?"
   );
   if (!proceed) return;
-
-  try {
-    localStorage.clear();
-    if ("caches" in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
-    }
-    if ("serviceWorker" in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map(r => r.unregister()));
-    }
-  } catch (err) {
-    console.error("Failed to clear local cache:", err);
-  } finally {
-    location.reload();
-  }
+  await clearEverythingAndReload();
 });
 
 /* ==========================================================================
@@ -596,7 +684,14 @@ function init() {
   startPolling();
 }
 
-init();
+try {
+  init();
+} catch (err) {
+  console.error("Fatal error during initialization:", err);
+  showFatalError(
+    "The app failed to start. Clearing its local cache usually fixes this."
+  );
+}
 
 /* ==========================================================================
    SERVICE WORKER REGISTRATION

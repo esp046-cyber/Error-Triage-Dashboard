@@ -103,6 +103,21 @@
       on the Webhook node once your workflows are active.
     </p>
 
+    <label class="field-label" for="authTokenInput">n8n Webhook Auth Token (optional)</label>
+    <input
+      type="password"
+      id="authTokenInput"
+      class="text-input"
+      placeholder="Paste your Header Auth token"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+    />
+    <p class="field-hint">
+      Sent as <code>Authorization: Bearer &lt;token&gt;</code> on every
+      request. Leave blank if your webhook nodes don't require Header Auth.
+    </p>
+
     <div class="test-row">
       <button class="test-btn" id="testConnBtn">Test Connection</button>
       <span class="test-result" id="testResult"></span>
@@ -154,6 +169,19 @@
     </button>
   </div>
 </section>
+
+<div class="fatal-overlay" id="fatalOverlay" style="display:none;" role="alertdialog" aria-modal="true">
+  <div class="fatal-card">
+    <div class="fatal-icon">⚠️</div>
+    <h2>Something went wrong</h2>
+    <p id="fatalMessage">
+      The app hit an unexpected error and can't continue safely. Clearing
+      its local cache usually fixes this.
+    </p>
+    <button class="retry-btn" id="fatalClearCacheBtn">Clear Cache &amp; Reload</button>
+    <button class="fatal-dismiss-btn" id="fatalDismissBtn">Try continuing anyway</button>
+  </div>
+</div>
 
 <script src="./app.js"></script>
 </body>
