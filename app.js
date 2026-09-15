@@ -523,6 +523,7 @@ function updateNotifStatusText() {
    ========================================================================== */
 
 const onboardingEl = document.getElementById("onboarding");
+const mainEl = document.querySelector("main");
 const gearBtn = document.getElementById("gearBtn");
 const configureNowBtn = document.getElementById("configureNowBtn");
 const settingsSheetEl = document.getElementById("settingsSheet");
@@ -541,12 +542,26 @@ const clearCacheBtn = document.getElementById("clearCacheBtn");
 function showOnboarding(show) {
   onboardingEl.style.display = show ? "block" : "none";
   feedEl.style.display = show ? "none" : "block";
+  mainEl.classList.toggle("centering", show);
   if (show) setConnBanner(false);
 }
+
+/* Basic client-side sanity check — not full URL validation, just enough to
+   tell "empty/obviously incomplete" apart from "looks like a real URL" so
+   Test Connection can enable itself without nagging with an error message. */
+function isLikelyValidWebhookUrl(value) {
+  const v = (value || "").trim();
+  return /^https?:\/\/.+\..+/i.test(v) && v.length > 15;
+}
+function syncTestButtonState() {
+  testConnBtn.disabled = !isLikelyValidWebhookUrl(webhookInput.value);
+}
+webhookInput.addEventListener("input", syncTestButtonState);
 
 function openSettings() {
   webhookInput.value = getWebhookBase();
   authTokenInput.value = getAuthToken();
+  syncTestButtonState();
   testResultEl.textContent = "";
   testResultEl.className = "test-result";
 
@@ -574,11 +589,7 @@ settingsScrimEl.addEventListener("click", closeSettings);
 
 testConnBtn.addEventListener("click", async () => {
   const url = webhookInput.value.trim().replace(/\/$/, "");
-  if (!url) {
-    testResultEl.textContent = "Paste a URL first";
-    testResultEl.className = "test-result fail";
-    return;
-  }
+  if (!url) return; // shouldn't happen — button is disabled until a URL is entered
 
   testConnBtn.disabled = true;
   testResultEl.textContent = "Testing…";
@@ -610,7 +621,7 @@ testConnBtn.addEventListener("click", async () => {
     testResultEl.className = "test-result fail";
   } finally {
     clearTimeout(timeoutId);
-    testConnBtn.disabled = false;
+    syncTestButtonState();
   }
 });
 
@@ -626,6 +637,7 @@ saveSettingsBtn.addEventListener("click", () => {
   setPollMs(POLL_OPTIONS_MS[Number(pollSlider.value)]);
   closeSettings();
   showOnboarding(false);
+  subheadEl.classList.remove("subhead-strong");
   subheadEl.textContent = "Loading error feed…";
   startPolling();
 });
@@ -676,10 +688,12 @@ function init() {
   renderChips();
   updateNotifStatusText();
   if (!isConfigured()) {
-    subheadEl.textContent = "Setup required";
+    subheadEl.textContent = "Connect your n8n webhook to start monitoring errors.";
+    subheadEl.classList.add("subhead-strong");
     showOnboarding(true);
     return;
   }
+  subheadEl.classList.remove("subhead-strong");
   showOnboarding(false);
   startPolling();
 }
